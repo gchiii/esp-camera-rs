@@ -2,7 +2,10 @@ use std::marker::PhantomData;
 
 use esp_idf_hal::peripheral::Peripheral;
 use esp_idf_hal::{gpio::*, peripheral::PeripheralRef};
-use esp_idf_sys::*;
+use esp_idf_sys::{
+    camera::{frame2jpg, ESP_ERR_CAMERA_FAILED_TO_SET_OUT_FORMAT},
+    *,
+};
 
 pub struct FrameBuffer<'a> {
     fb: *mut camera::camera_fb_t,
@@ -12,6 +15,26 @@ pub struct FrameBuffer<'a> {
 impl<'a> FrameBuffer<'a> {
     pub fn data(&self) -> &'a [u8] {
         unsafe { std::slice::from_raw_parts((*self.fb).buf, (*self.fb).len) }
+    }
+
+    pub unsafe fn data_raw(&mut self) -> *mut camera::camera_fb_t {
+        self.fb
+    }
+
+    pub fn data_as_jpeg(&self, quality: u8) -> Result<&'a [u8], EspError> {
+        if self.format() != camera::pixformat_t_PIXFORMAT_JPEG {
+            let mut buffer: *mut u8 = std::ptr::null_mut();
+            let mut buffer_len: usize = 0;
+
+            let converted = unsafe { frame2jpg(self.fb, quality, &mut buffer, &mut buffer_len) };
+            if !converted {
+                return Err(EspError::from(ESP_ERR_CAMERA_FAILED_TO_SET_OUT_FORMAT).unwrap());
+            }
+
+            Ok(unsafe { std::slice::from_raw_parts(buffer, buffer_len) })
+        } else {
+            Ok(self.data())
+        }
     }
 
     pub fn width(&self) -> usize {
