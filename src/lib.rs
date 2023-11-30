@@ -2,10 +2,7 @@ use std::marker::PhantomData;
 
 use esp_idf_hal::peripheral::Peripheral;
 use esp_idf_hal::{gpio::*, peripheral::PeripheralRef};
-use esp_idf_sys::{
-    camera::{frame2jpg, ESP_ERR_CAMERA_FAILED_TO_SET_OUT_FORMAT},
-    *,
-};
+use esp_idf_sys::*;
 
 pub struct FrameBuffer<'a> {
     fb: *mut camera::camera_fb_t,
@@ -26,9 +23,12 @@ impl<'a> FrameBuffer<'a> {
             let mut buffer: *mut u8 = std::ptr::null_mut();
             let mut buffer_len: usize = 0;
 
-            let converted = unsafe { frame2jpg(self.fb, quality, &mut buffer, &mut buffer_len) };
+            let converted =
+                unsafe { camera::frame2jpg(self.fb, quality, &mut buffer, &mut buffer_len) };
             if !converted {
-                return Err(EspError::from(ESP_ERR_CAMERA_FAILED_TO_SET_OUT_FORMAT).unwrap());
+                return Err(
+                    EspError::from(camera::ESP_ERR_CAMERA_FAILED_TO_SET_OUT_FORMAT).unwrap(),
+                );
             }
 
             Ok(unsafe { std::slice::from_raw_parts(buffer, buffer_len) })
