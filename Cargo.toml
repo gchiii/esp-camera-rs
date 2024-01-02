@@ -10,6 +10,6 @@ esp-idf-hal = "0.42.5"
 esp-idf-sys = "0.33.7"
 
 [[package.metadata.esp-idf-sys.extra_components]]
-component_dirs = "esp32-camera"
+remote_component = { name = "espressif/esp32-camera", version = "2.0.6" }
 bindings_header = "bindings.h"
 bindings_module = "camera"

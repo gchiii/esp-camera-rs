@@ -1,8 +1,11 @@
 use std::marker::PhantomData;
-
-use esp_idf_hal::peripheral::Peripheral;
-use esp_idf_hal::{gpio::*, peripheral::PeripheralRef};
-use esp_idf_sys::*;
+use esp_idf_hal::{
+    peripheral::Peripheral,
+    peripheral::PeripheralRef,
+    gpio::*
+};
+use esp_idf_svc::sys::{camera, EspError, esp};
+use esp_idf_sys::camera::camera_grab_mode_t_CAMERA_GRAB_LATEST;
 
 pub struct FrameBuffer<'a> {
     fb: *mut camera::camera_fb_t,
@@ -11,7 +14,10 @@ pub struct FrameBuffer<'a> {
 
 impl<'a> FrameBuffer<'a> {
     pub fn data(&self) -> &'a [u8] {
-        unsafe { std::slice::from_raw_parts((*self.fb).buf, (*self.fb).len) }
+        let fb = unsafe { self.fb.read_unaligned() };
+        let data = unsafe { std::ptr::addr_of!(*fb.buf) };
+        let len = fb.len;
+        unsafe { std::slice::from_raw_parts(data, len) }
     }
 
     pub unsafe fn data_raw(&mut self) -> *mut camera::camera_fb_t {
@@ -37,6 +43,21 @@ impl<'a> FrameBuffer<'a> {
         }
     }
 
+    pub fn data_as_bmp(&self) -> Result<&'a [u8], EspError> {
+        let mut buffer: *mut u8 = std::ptr::null_mut();
+        let mut buffer_len: usize = 0;
+
+        let converted =
+            unsafe { camera::frame2bmp(self.fb, &mut buffer, &mut buffer_len) };
+        if !converted {
+            return Err(
+                EspError::from(camera::ESP_ERR_CAMERA_FAILED_TO_SET_OUT_FORMAT).unwrap(),
+            );
+        }
+
+        Ok(unsafe { std::slice::from_raw_parts(buffer, buffer_len) })
+    }
+
     pub fn width(&self) -> usize {
         unsafe { (*self.fb).width }
     }
@@ -46,7 +67,10 @@ impl<'a> FrameBuffer<'a> {
     }
 
     pub fn format(&self) -> camera::pixformat_t {
-        unsafe { (*self.fb).format }
+        let fb = unsafe { self.fb.read_unaligned() };
+        fb.format
+        // unsafe { std::ptr::read_unaligned::<camera::pixformat_t>(std::ptr::addr_of!((*self.fb).format)) }
+        // unsafe { (*self.fb).format }
     }
 
     pub fn timestamp(&self) -> camera::timeval {
@@ -54,6 +78,11 @@ impl<'a> FrameBuffer<'a> {
     }
 }
 
+impl<'a> Drop for FrameBuffer<'a> {
+    fn drop(&mut self) {
+        unsafe { camera::esp_camera_fb_return(self.fb)};
+    }
+}
 pub struct CameraSensor<'a> {
     sensor: *mut camera::sensor_t,
     _p: PhantomData<&'a camera::sensor_t>,
@@ -230,13 +259,39 @@ impl<'a> CameraSensor<'a> {
     }
 }
 
+pub enum GrabMode {
+    #[doc = "< Fills buffers when they are empty. Less resources but first 'fb_count' frames might be old"]
+    CameraGrabWhenEmpty,
+    #[doc = "< Except when 1 frame buffer is used, queue will always contain the last 'fb_count' frames"]
+    CameraGrabLatest,
+}
+
+impl From<GrabMode> for u32 {
+    fn from(value: GrabMode) -> Self {
+        match value {
+            GrabMode::CameraGrabWhenEmpty => esp_idf_sys::camera::camera_grab_mode_t_CAMERA_GRAB_WHEN_EMPTY,
+            GrabMode::CameraGrabLatest => esp_idf_sys::camera::camera_grab_mode_t_CAMERA_GRAB_LATEST,
+        }
+    }
+}
+
+impl From<u32> for GrabMode {
+    fn from(value: u32) -> Self {
+        match value {
+            esp_idf_sys::camera::camera_grab_mode_t_CAMERA_GRAB_WHEN_EMPTY => GrabMode::CameraGrabWhenEmpty,
+            esp_idf_sys::camera::camera_grab_mode_t_CAMERA_GRAB_LATEST => GrabMode::CameraGrabLatest,
+            _ => GrabMode::CameraGrabWhenEmpty
+        }
+    }
+}
+
 pub struct Camera<'a> {
     _p: PhantomData<&'a ()>,
 }
 
 impl<'a> Camera<'a> {
     pub fn new(
-        pin_pwdn: impl Peripheral<P = impl OutputPin> + 'a,
+        pin_pwdn: Option<PeripheralRef<'a, AnyOutputPin>>,
         pin_reset: Option<PeripheralRef<'a, AnyOutputPin>>,
         pin_xclk: impl Peripheral<P = impl OutputPin> + 'a,
         pin_d0: impl Peripheral<P = impl InputPin> + 'a,
@@ -254,9 +309,15 @@ impl<'a> Camera<'a> {
         pin_sccb_scl: Option<PeripheralRef<'a, AnyIOPin>>,
     ) -> Result<Self, esp_idf_sys::EspError> {
         esp_idf_hal::into_ref!(
-            pin_pwdn, pin_xclk, pin_d0, pin_d1, pin_d2, pin_d3, pin_d4, pin_d5, pin_d6, pin_d7,
+            pin_xclk, pin_d0, pin_d1, pin_d2, pin_d3, pin_d4, pin_d5, pin_d6, pin_d7,
             pin_vsync, pin_href, pin_pclk
         );
+
+        let pin_pwdn = if let Some(pwdn) = pin_pwdn {
+            pwdn.into_ref().pin()
+        } else {
+            -1
+        };
 
         let pin_reset = if let Some(reset) = pin_reset {
             reset.into_ref().pin()
@@ -265,8 +326,8 @@ impl<'a> Camera<'a> {
         };
 
         let config = camera::camera_config_t {
-            pin_pwdn: pin_pwdn.pin(),
-            pin_reset: pin_reset,
+            pin_pwdn,
+            pin_reset,
             pin_xclk: pin_xclk.pin(),
 
             pin_d0: pin_d0.pin(),
@@ -297,12 +358,12 @@ impl<'a> Camera<'a> {
             ledc_timer: esp_idf_sys::ledc_timer_t_LEDC_TIMER_0,
             ledc_channel: esp_idf_sys::ledc_channel_t_LEDC_CHANNEL_0,
 
-            pixel_format: camera::pixformat_t_PIXFORMAT_RGB565,
-            frame_size: camera::framesize_t_FRAMESIZE_QVGA,
+            pixel_format: camera::pixformat_t_PIXFORMAT_JPEG,
+            frame_size: camera::framesize_t_FRAMESIZE_VGA,
 
             jpeg_quality: 12,
             fb_count: 1,
-            grab_mode: camera::camera_grab_mode_t_CAMERA_GRAB_WHEN_EMPTY,
+            grab_mode: camera_grab_mode_t_CAMERA_GRAB_LATEST,
 
             ..Default::default()
         };
@@ -312,15 +373,15 @@ impl<'a> Camera<'a> {
     }
 
     pub fn get_framebuffer(&self) -> Option<FrameBuffer> {
-        let fb = unsafe { camera::esp_camera_fb_get() };
-        return if fb.is_null() {
+        let fb: *mut camera::camera_fb_t = unsafe { camera::esp_camera_fb_get() };
+        if fb.is_null() {
             None
         } else {
             Some(FrameBuffer {
                 fb,
                 _p: PhantomData,
             })
-        };
+        }
     }
 
     pub fn sensor(&self) -> CameraSensor<'a> {
