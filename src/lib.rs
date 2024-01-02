@@ -4,7 +4,7 @@ use esp_idf_hal::{
     peripheral::PeripheralRef,
     gpio::*
 };
-use esp_idf_svc::sys::{camera, EspError, esp};
+use esp_idf_sys::{camera, EspError, esp};
 use esp_idf_sys::camera::camera_grab_mode_t_CAMERA_GRAB_LATEST;
 
 pub struct FrameBuffer<'a> {
