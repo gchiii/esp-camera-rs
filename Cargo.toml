@@ -15,6 +15,6 @@ esp-idf-svc = { version = "0.48.0" }
 
 
 [[package.metadata.esp-idf-sys.extra_components]]
-remote_component = { name = "espressif/esp32-camera", version = "2.0.6" }
+remote_component = { name = "espressif/esp32-camera", version = "2.0.7" }
 bindings_header = "bindings.h"
 bindings_module = "camera"
